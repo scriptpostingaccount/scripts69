@@ -44,12 +44,6 @@ local function win()
 		task.wait(1)
 	end
 	moveDraggables()
-	local args = {
-	    [1] = 2,
-	    [2] = "Amazon"
-	}
-	
-	game:GetService("ReplicatedStorage").StrongMan_UpgradeStrength:InvokeServer(unpack(args))
 
 end
 
