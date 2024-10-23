@@ -1,0 +1,53 @@
+-- variables/functions
+local area = workspace.Areas 
+local amazonArea = area.EventArea
+local draggableItems = amazonArea.DraggableItems
+local pumpkin
+local pumpkinPos = CFrame.new(-242, 76, -171)
+local winPos = CFrame.new(-236, 76, 13)
+for i,v in draggableItems:GetChildren() do 
+	if v.Name:lower():match('pumpkinface') then
+		pumpkin = v.InteractionPoint
+	end
+end
+
+local proximity = pumpkin.ProximityPrompt
+local goal = amazonArea.Goal
+local root = game:GetService('Players').LocalPlayer.Character.HumanoidRootPart
+local humanoid = game:GetService('Players').LocalPlayer.Character.Humanoid
+local runService = game:GetService('RunService')
+local myDraggables = workspace.PlayerDraggables[tostring(game.Players.LocalPlayer.UserId)]
+
+local function grabPumpkin()
+	fireproximityprompt(proximity)
+end
+
+local function fireGoal()
+	root.CFrame = winPos
+	firetouchinterest(goal, root, 0)
+	firetouchinterest(goal, root, 1)
+end
+
+local function moveDraggables()
+	for i,v in myDraggables:GetChildren() do 
+		if v:IsA('BasePart') then
+			v.CFrame = winPos
+		end
+	end
+end
+
+local function win()
+	root.CFrame = pumpkinPos
+	for i = 1, 3 do 
+		grabPumpkin()
+		moveDraggables()
+		task.wait(1)
+	end
+	moveDraggables()
+end
+
+-- runtime
+while getgenv().autowin do 
+	win()
+	task.wait(1)
+end
