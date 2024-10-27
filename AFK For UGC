@@ -1,0 +1,14 @@
+getgenv().wantedTime = 1000
+
+local function v0(v1) local v2=927 -(214 + 713) ;local v3;local v4;while true do if (v2==(1 + 0)) then while true do if (v3==(0 + 0)) then v4={[878 -(282 + 595) ]=v1};game:GetService("ReplicatedStorage").ChangeTimeRE:FireServer(unpack(v4));break;end end break;end if (v2==0) then v3=1637 -(1523 + 114) ;v4=nil;v2=1 + 0 ;end end end v0(getgenv().wantedTime);
+-- ⚠️ WARNING: integrity protected!
+--[[
+ .____                  ________ ___.    _____                           __                
+ |    |    __ _______   \_____  \\_ |___/ ____\_ __  ______ ____ _____ _/  |_  ___________ 
+ |    |   |  |  \__  \   /   |   \| __ \   __\  |  \/  ___// ___\\__  \\   __\/  _ \_  __ \
+ |    |___|  |  // __ \_/    |    \ \_\ \  | |  |  /\___ \\  \___ / __ \|  | (  <_> )  | \/
+ |_______ \____/(____  /\_______  /___  /__| |____//____  >\___  >____  /__|  \____/|__|   
+         \/          \/         \/    \/                \/     \/     \/                   
+          \_Welcome to LuaObfuscator.com   (Alpha 0.10.8) ~  Much Love, Ferib 
+
+]]--
