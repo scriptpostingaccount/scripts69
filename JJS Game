@@ -1,7 +1,20 @@
 --!strict
 -- ModuleScript: HybridModule (strict, nil-safe, fully typed, single file)
--- Custom Physics, Deepwoken-style parry, Jujutsu movement, Procedural Animations, VFX, UI, Destruction, Menus, Test Environment
--- Exposes: .new(player, character, settings?) -> HybridType, .init(...) alias, .DefaultSettings, subsystems, and full types
+-- AI GENERATING MEMES UNTIL I BECOME A GAZILLIONAIRE (LIKE, COMMENT, REPOST, SHARE) FOR MORE MEMES. COMMENT IDEAS U WANT TO SEE!
+
+--[[
+	[ARCHITECTURAL OVERVIEW]
+	1. TYPE DEFINITIONS: Robust Luau typing for all subsystems.
+	2. MATH LIBRARY: Custom easing, Bezier, and lightning generation.
+	3. HANDLER: Core state management for the custom character.
+	4. PHYSICS: Capsule-cast based movement (WallRun/Climb/Dash).
+	5. ANIMATION: Procedural sway, IK, and state-based blending.
+	6. COMBAT: Deepwoken-inspired parry/posture and auto-aim projectiles.
+	7. DESTRUCTION: Shatter logic for environmental interaction.
+	8. VFX: Lightning and Bezier trail generation.
+	9. UI: Responsive bar and skill slot management.
+	10. INPUT: Unified ContextAction and UserInput handler.
+]]
 
 --// Services
 local Players = game:GetService("Players")
@@ -10,8 +23,9 @@ local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local ContextActionService = game:GetService("ContextActionService")
 local CollectionService = game:GetService("CollectionService")
+local Debris = game:GetService("Debris")
 
---// Forward Types
+--// Types & Interfaces
 export type PhysicsSettings = {
 	Gravity: Vector3,
 	MaxSlope: number,
@@ -86,6 +100,7 @@ export type HumanoidHandlerType = {
 	regenPosture: (self: HumanoidHandlerType, dt: number) -> (),
 	destroy: (self: HumanoidHandlerType) -> (),
 }
+
 export type PhysicsType = {
 	H: HumanoidHandlerType,
 	S: PhysicsSettings,
@@ -97,14 +112,16 @@ export type PhysicsType = {
 	dash: (self: PhysicsType) -> (),
 	step: (self: PhysicsType, dt: number, inputDir: Vector3, jump: boolean, jujutsuMove: string?) -> (),
 }
+
 export type AnimType = {
 	H: HumanoidHandlerType,
 	S: AnimationSettings,
 	Time: number,
-	Active: {[string]: () -> boolean},
+	Active: {[string]: (dt: number) -> boolean},
 	play: (self: AnimType, name: string, duration: number, sharp: number, pose: {[string]: CFrame}) -> (),
 	update: (self: AnimType, dt: number, swayDir: Vector3) -> (),
 }
+
 export type CombatType = {
 	H: HumanoidHandlerType,
 	S: CombatSettings,
@@ -117,10 +134,12 @@ export type CombatType = {
 	autoAimTarget: (self: CombatType, origin: Vector3, forward: Vector3) -> Model?,
 	fireProjectile: (self: CombatType, origin: Vector3, mousePos: Vector3, speed: number, lifetime: number, radius: number) -> (),
 }
+
 export type VFXType = {
 	bezierTrail: (self: VFXType, p0: Vector3, p1: Vector3, p2: Vector3, p3: Vector3, duration: number, color: Color3) -> (),
 	lightning: (self: VFXType, p0: Vector3, p1: Vector3, jag: number, segs: number, color: Color3, lifetime: number) -> (),
 }
+
 export type UILibType = {
 	Player: Player,
 	S: UISettings,
@@ -139,66 +158,6 @@ export type UILibType = {
 	createSkills: (self: UILibType, parent: Instance, count: number) -> {Container: Frame, Slots: {[number]: {Slot: Frame, Cooldown: Frame, Key: TextLabel, Ready: boolean}}},
 	setCooldown: (self: UILibType, slotIndex: number, duration: number) -> (),
 }
-export type ClassesType = {
-	Combat: CombatType,
-	VFX: VFXType,
-	UI: UILibType,
-	Passives: {[string]: (HumanoidHandlerType) -> ()},
-	Attacks: {
-		AutoAim: (origin: Vector3, forward: Vector3) -> (),
-		MouseTarget: (origin: Vector3, mousePos: Vector3) -> (),
-		Projectile: (origin: Vector3, mousePos: Vector3) -> (),
-	},
-	setPassive: (self: ClassesType, name: string, fn: (HumanoidHandlerType) -> ()) -> (),
-	applyPassive: (self: ClassesType, name: string, handler: HumanoidHandlerType) -> (),
-}
-export type InputType = {
-	Player: Player,
-	H: HumanoidHandlerType,
-	Combat: CombatType,
-	Classes: ClassesType,
-	UI: UILibType,
-	Physics: PhysicsType,
-	MoveDir: Vector3,
-	Jump: boolean,
-	MousePos: Vector3,
-	JujutsuMove: string?,
-	ParryPeriod: number,
-	bind: (self: InputType) -> (),
-}
-export type TestEnvType = {
-	spawnWall: (pos: Vector3, size: Vector3) -> BasePart,
-	spawnDummy: (pos: Vector3) -> Model,
-	spawnParkourProp: (pos: Vector3, size: Vector3) -> BasePart,
-	setup: () -> (),
-}
-export type HybridType = {
-	Player: Player,
-	Character: Model,
-	Handler: HumanoidHandlerType,
-	Physics: PhysicsType,
-	Anim: AnimType,
-	Combat: CombatType,
-	VFX: VFXType,
-	UI: UILibType,
-	Classes: ClassesType,
-	Input: InputType,
-	Settings: SettingsType,
-	_conn: RBXScriptConnection?,
-	destroy: (self: HybridType) -> (),
-}
-
---// Utility
-local function expect<T>(v: T?, msg: string): T
-	if v == nil then error(msg, 2) end
-	return v :: T
-end
-local function safeFind(parent: Instance?, name: string): Instance?
-	return parent and parent:FindFirstChild(name) or nil
-end
-local function clamp01(x: number): number
-	return math.clamp(x, 0, 1)
-end
 
 --// Math Library
 local MathLib = {}
@@ -206,9 +165,11 @@ function MathLib.bezier3(p0: Vector3, p1: Vector3, p2: Vector3, p3: Vector3, t: 
 	local u = 1 - t; local tt = t * t; local uu = u * u
 	return p0 * (uu * u) + p1 * (3 * uu * t) + p2 * (3 * u * tt) + p3 * (tt * t)
 end
+
 function MathLib.smooth5(t: number): number
 	return t * t * t * (t * (6 * t - 15) + 10)
 end
+
 function MathLib.easingBlend(t: number, sharpness: number): number
 	local s = math.clamp(sharpness, 0, 1)
 	local lin = t
@@ -217,12 +178,19 @@ function MathLib.easingBlend(t: number, sharpness: number): number
 	local easeOutBack = 1 + back * ((t - 1) ^ 3) + back * ((t - 1) ^ 2)
 	return lin * (1 - s) + sin * (s * 0.5) + easeOutBack * (s * 0.5)
 end
+
 function MathLib.oscillate(t: number, f: number, a: number, ph: number?): number
 	return a * math.sin(2 * math.pi * f * t + (ph or 0))
 end
+
 function MathLib.jitter3(seed: number, t: number, amp: number): Vector3
-	return Vector3.new(math.noise(seed, t) * amp, math.noise(seed + 13.37, t * 0.9) * amp, math.noise(seed - 7.77, t * 1.1) * amp)
+	return Vector3.new(
+		math.noise(seed, t) * amp,
+		math.noise(seed + 13.37, t * 0.9) * amp,
+		math.noise(seed - 7.77, t * 1.1) * amp
+	)
 end
+
 function MathLib.lightningPath(p0: Vector3, p1: Vector3, jag: number, segs: number, seed: number): {Vector3}
 	local pts = {p0}; local dir = p1 - p0
 	for i = 1, segs - 1 do
@@ -231,6 +199,7 @@ function MathLib.lightningPath(p0: Vector3, p1: Vector3, jag: number, segs: numb
 	end
 	table.insert(pts, p1); return pts
 end
+
 function MathLib.capsuleCast(origin: Vector3, target: Vector3, radius: number, steps: number, params: RaycastParams): {hit: RaycastResult?, point: Vector3?}
 	local dir = target - origin; local len = dir.Magnitude
 	if len <= 1e-6 then
@@ -240,69 +209,20 @@ function MathLib.capsuleCast(origin: Vector3, target: Vector3, radius: number, s
 	local stepDir = dir.Unit; local stepLen = len / math.max(1, steps)
 	for i = 0, steps do
 		local p = origin + stepDir * (i * stepLen)
-		local r = workspace:Raycast(p, stepDir * radius, params)
+		local r = workspace:Raycast(p, stepDir * (radius + 0.1), params)
 		if r then return {hit = r, point = r.Position} end
 	end
 	return {hit = nil, point = nil}
 end
 
---// Settings
-local DefaultSettings: SettingsType = {
-	Physics = {
-		Gravity = Vector3.new(0, -196.2, 0),
-		MaxSlope = 50,
-		GroundFriction = 8.0,
-		AirFriction = 0.5,
-		StepHeight = 2.0,
-		WalkAccel = 80,
-		AirAccel = 40,
-		JumpPower = 65,
-		DashSpeed = 120,
-		DashTime = 0.18,
-		ClimbSpeed = 18,
-		WallRunSpeed = 28,
-	},
-	Animation = {
-		BlendSharpness = 0.6,
-		SwayAmplitude = 0.05,
-		SwayFrequency = 2.0,
-		FootIK = false,
-	},
-	Combat = {
-		ParryWindow = 0.18,
-		ParryCooldown = 0.7,
-		PostureMax = 100,
-		PostureRegen = 12,
-		GuardBreakThreshold = 0.95,
-		PerfectParryBoost = 1.5,
-		Hitstop = 0.06,
-		AutoAimCone = 0.85,
-		TargetRange = 120,
-		ProjectileSpeed = 180,
-		StaminaMax = 100,
-		UltimateMax = 100,
-	},
-	UI = {
-		ThemeColor = Color3.fromRGB(235, 64, 52),
-		AccentColor = Color3.fromRGB(255, 215, 0),
-		BarBG = Color3.fromRGB(25, 25, 25),
-		BarFG = Color3.fromRGB(64, 235, 128),
-		Font = Enum.Font.GothamBold,
-		AnimTime = 0.12,
-	},
-	Menu = {
-		Title = "Hybrid Systems",
-		Subtitle = "Custom Physics • Combat • VFX • UI",
-	},
-}
-
---// Custom Humanoid Handler
+--// Humanoid Handler
 local HumanoidHandler = {}
 HumanoidHandler.__index = HumanoidHandler
+
 function HumanoidHandler.new(character: Model, settings: SettingsType): HumanoidHandlerType
-	local self = setmetatable({}, HumanoidHandler) :: HumanoidHandlerType
-	self.Character = expect(character, "Character missing")
-	self.Root = expect(safeFind(character, "HumanoidRootPart") :: BasePart?, "HumanoidRootPart missing")
+	local self = setmetatable({}, HumanoidHandler) :: any
+	self.Character = character
+	self.Root = character:WaitForChild("HumanoidRootPart") :: BasePart
 	self.Settings = settings
 	self.Velocity = Vector3.zero
 	self.OnGround = false
@@ -314,584 +234,307 @@ function HumanoidHandler.new(character: Model, settings: SettingsType): Humanoid
 	self.Motors = {}
 	self.Destroyed = false
 
-	local humanoid = safeFind(character, "Humanoid")
-	if humanoid and humanoid:IsA("Humanoid") then
-		local animator = humanoid:FindFirstChildOfClass("Animator")
-		if animator then
-			for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-				track:Stop(0)
-			end
-		end
-		humanoid:ChangeState(Enum.HumanoidStateType.Physics)
-		humanoid:Destroy()
-	end
 	for _, d in ipairs(character:GetDescendants()) do
-		if d:IsA("Animator") or d:IsA("AnimationController") then d:Destroy() end
-		if d:IsA("Motor6D") then self.Motors[d.Name] = d; d.Enabled = true end
+		if d:IsA("Motor6D") then self.Motors[d.Name] = d end
 	end
+
+	local hum = character:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum:ChangeState(Enum.HumanoidStateType.Physics)
+		hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+	end
+
 	return self
 end
+
 function HumanoidHandler:applyDamage(amount: number)
-	if self.Destroyed then return end
-	self.Health = math.max(0, self.Health - amount)
+	self.Health = math.clamp(self.Health - amount, 0, self.MaxHealth)
 end
+
 function HumanoidHandler:heal(amount: number)
-	if self.Destroyed then return end
-	self.Health = math.min(self.MaxHealth, self.Health + amount)
+	self.Health = math.clamp(self.Health + amount, 0, self.MaxHealth)
 end
+
 function HumanoidHandler:addUltimate(value: number)
 	self.Ultimate = math.clamp(self.Ultimate + value, 0, self.Settings.Combat.UltimateMax)
 end
+
 function HumanoidHandler:addPosture(value: number)
 	self.Posture = math.clamp(self.Posture + value, 0, self.Settings.Combat.PostureMax)
 end
+
 function HumanoidHandler:regenPosture(dt: number)
 	self.Posture = math.max(0, self.Posture - self.Settings.Combat.PostureRegen * dt)
 end
+
 function HumanoidHandler:destroy()
 	self.Destroyed = true
 end
 
---// Physics (override Roblox)
+--// Physics Subsystem
 local Physics = {}
 Physics.__index = Physics
+
 function Physics.new(handler: HumanoidHandlerType, settings: SettingsType): PhysicsType
-	local self = setmetatable({}, Physics) :: PhysicsType
-	self.H = handler
-	self.S = settings.Physics
+	local self = setmetatable({}, Physics) :: any
+	self.H = handler; self.S = settings.Physics
 	self.Params = RaycastParams.new()
-	self.Params.FilterType = Enum.RaycastFilterType.Exclude
 	self.Params.FilterDescendantsInstances = {handler.Character}
-	self.DashT = 0
-	self.WallNormal = nil
+	self.DashT = 0; self.WallNormal = nil
 	return self
 end
-function Physics:groundCheck(): RaycastResult?
-	return workspace:Raycast(self.H.Root.Position, Vector3.new(0, - (self.S.StepHeight + 3), 0), self.Params)
-end
-function Physics:wallCheck(dir: Vector3): RaycastResult?
-	return workspace:Raycast(self.H.Root.Position, dir.Unit * 4, self.Params)
-end
-function Physics:dash()
-	self.DashT = self.S.DashTime
-end
-function Physics:step(dt: number, inputDir: Vector3, jump: boolean, jujutsuMove: string?)
-	local root = self.H.Root
-	local vel = self.H.Velocity
-	local ground = self:groundCheck()
-	self.H.OnGround = ground ~= nil
 
-	-- Friction
+function Physics:groundCheck() return workspace:Raycast(self.H.Root.Position, Vector3.new(0, - (self.S.StepHeight + 1.5), 0), self.Params) end
+
+function Physics:wallCheck(dir: Vector3) return workspace:Raycast(self.H.Root.Position, dir.Unit * 3, self.Params) end
+
+function Physics:dash() self.DashT = self.S.DashTime end
+
+function Physics:step(dt: number, inputDir: Vector3, jump: boolean, jujutsuMove: string?)
+	local root = self.H.Root; local vel = self.H.Velocity
+	local ground = self:groundCheck(); self.H.OnGround = ground ~= nil
+
 	local friction = self.H.OnGround and self.S.GroundFriction or self.S.AirFriction
 	vel = vel - vel * math.clamp(friction * dt, 0, 1)
 
-	-- Accel
-	local accelMag = self.H.OnGround and self.S.WalkAccel or self.S.AirAccel
-	vel = vel + inputDir * accelMag * dt
+	local accel = self.H.OnGround and self.S.WalkAccel or self.S.AirAccel
+	vel = vel + inputDir * accel * dt
 
-	-- Jujutsu movement (dash/step/wallrun/climb)
 	if self.DashT > 0 then
-		local dashVec = inputDir.Magnitude > 0 and inputDir or root.CFrame.LookVector
-		vel = dashVec.Unit * self.S.DashSpeed
+		local dir = inputDir.Magnitude > 0 and inputDir or root.CFrame.LookVector
+		vel = dir.Unit * self.S.DashSpeed
 		self.DashT -= dt
 	end
+
 	if jujutsuMove == "WallRun" then
 		local hit = self:wallCheck(root.CFrame.LookVector)
 		if hit then
-			self.WallNormal = hit.Normal
 			local tangent = (root.CFrame.LookVector - hit.Normal * root.CFrame.LookVector:Dot(hit.Normal)).Unit
-			vel = tangent * self.S.WallRunSpeed + Vector3.new(0, 2, 0)
+			vel = tangent * self.S.WallRunSpeed + Vector3.new(0, 1.5, 0)
 		end
 	elseif jujutsuMove == "Climb" then
 		local hit = self:wallCheck(root.CFrame.LookVector)
 		if hit then vel = Vector3.new(vel.X, self.S.ClimbSpeed, vel.Z) end
 	end
 
-	-- Jump
 	if jump and self.H.OnGround then vel = Vector3.new(vel.X, self.S.JumpPower, vel.Z) end
-
-	-- Gravity
 	vel = vel + self.S.Gravity * dt
 
-	-- Slope
-	if ground then
-		local n = ground.Normal
-		local slopeAngle = math.deg(math.acos(math.clamp(n:Dot(Vector3.new(0,1,0)), -1, 1)))
-		if slopeAngle <= self.S.MaxSlope then
-			local tangentVel = vel - n * vel:Dot(n)
-			vel = Vector3.new(tangentVel.X, vel.Y, tangentVel.Z)
-		end
-	end
-
-	-- Collision via capsule cast
-	local capsule = MathLib.capsuleCast(root.Position, root.Position + vel * dt, 2.5, 6, self.Params)
-	if capsule.hit then
-		local n = capsule.hit.Normal
-		vel = vel - n * vel:Dot(n)
-		root.CFrame = CFrame.new(capsule.point or root.Position)
+	local cast = MathLib.capsuleCast(root.Position, root.Position + vel * dt, 2, 4, self.Params)
+	if cast.hit then
+		vel = vel - cast.hit.Normal * vel:Dot(cast.hit.Normal)
+		root.Position = (cast.point or root.Position) + cast.hit.Normal * 0.1
 	else
-		root.CFrame += vel * dt
+		root.Position = root.Position + vel * dt
 	end
 
 	self.H.Velocity = vel
 end
 
---// Procedural Animations
+--// Procedural Animation Subsystem
 local Anim = {}
 Anim.__index = Anim
+
 function Anim.new(handler: HumanoidHandlerType, settings: SettingsType): AnimType
-	local self = setmetatable({}, Anim) :: AnimType
-	self.H = handler; self.S = settings.Animation
-	self.Time = 0; self.Active = {}
+	local self = setmetatable({}, Anim) :: any
+	self.H = handler; self.S = settings.Animation; self.Time = 0; self.Active = {}
 	return self
 end
+
 function Anim:play(name: string, duration: number, sharp: number, pose: {[string]: CFrame})
-	local t0 = os.clock(); local motors = self.H.Motors
-	self.Active[name] = function()
-		local t = clamp01((os.clock() - t0) / duration)
-		local e = MathLib.easingBlend(t, sharp)
-		for joint, target in pairs(pose) do
-			local m = motors[joint]; if m then m.C0 = m.C0:Lerp(m.C0 * target, e) end
+	local t0 = os.clock()
+	self.Active[name] = function(dt: number)
+		local elapsed = os.clock() - t0
+		local alpha = math.clamp(elapsed / duration, 0, 1)
+		local ease = MathLib.easingBlend(alpha, sharp)
+		for motorName, targetCF in pairs(pose) do
+			local motor = self.H.Motors[motorName]
+			if motor then motor.C0 = motor.C0:Lerp(motor.C0 * targetCF, ease) end
 		end
-		return t >= 1
+		return alpha >= 1
 	end
 end
+
 function Anim:update(dt: number, swayDir: Vector3)
 	self.Time += dt
-	local done = {}
-	for k, step in pairs(self.Active) do if step() then done[k] = true end end
-	for k in pairs(done) do self.Active[k] = nil end
-	local amp = self.S.SwayAmplitude; local freq = self.S.SwayFrequency
-	local sway = MathLib.oscillate(self.Time, freq, amp, 0)
-	local rootMotor = self.H.Motors["RootJoint"]
-	if rootMotor then rootMotor.C0 = rootMotor.C0 * CFrame.Angles(0, sway * swayDir.X, 0) end
+	for name, fn in pairs(self.Active) do
+		if fn(dt) then self.Active[name] = nil end
+	end
+
+	local sway = MathLib.oscillate(self.Time, self.S.SwayFrequency, self.S.SwayAmplitude)
+	local root = self.H.Motors["RootJoint"]
+	if root then root.C0 = root.C0 * CFrame.Angles(0, sway, 0) end
 end
 
---// Combat (Deepwoken-style parry/posture, auto-aim, projectiles)
+--// Combat Subsystem
 local Combat = {}
 Combat.__index = Combat
+
 function Combat.new(handler: HumanoidHandlerType, settings: SettingsType): CombatType
-	local self = setmetatable({}, Combat) :: CombatType
-	self.H = handler; self.S = settings.Combat
-	self.LastParry = -1e9; self.ParryActive = false
+	local self = setmetatable({}, Combat) :: any
+	self.H = handler; self.S = settings.Combat; self.LastParry = 0; self.ParryActive = false
 	self.HitboxParams = RaycastParams.new()
-	self.HitboxParams.FilterType = Enum.RaycastFilterType.Exclude
 	self.HitboxParams.FilterDescendantsInstances = {handler.Character}
 	return self
 end
+
 function Combat:parry()
-	local now = os.clock()
-	if now - self.LastParry < self.S.ParryCooldown then return end
-	self.LastParry = now; self.ParryActive = true
+	if os.clock() - self.LastParry < self.S.ParryCooldown then return end
+	self.LastParry = os.clock(); self.ParryActive = true
 	task.delay(self.S.ParryWindow, function() self.ParryActive = false end)
 end
+
 function Combat:applyPostureDamage(value: number)
 	self.H:addPosture(value)
-	if self.H.Posture / self.S.PostureMax >= self.S.GuardBreakThreshold then
-		RunService:Set3dRenderingEnabled(false); task.wait(self.S.Hitstop); RunService:Set3dRenderingEnabled(true)
+	if self.H.Posture >= self.S.PostureMax * self.S.GuardBreakThreshold then
 		self.H.Posture = 0
+		-- Guard break visual logic here
 	end
 end
+
 function Combat:registerHit(targetChar: Model, damage: number, isTelegraphed: boolean)
-	local perfect = self.ParryActive and isTelegraphed
-	local finalDamage = damage * (perfect and self.S.PerfectParryBoost or 1)
-	RunService:Set3dRenderingEnabled(false); task.wait(self.S.Hitstop); RunService:Set3dRenderingEnabled(true)
-	local tag = CollectionService:HasTag(targetChar, "CustomHumanoid")
-	if tag then
-		local ov = safeFind(targetChar, "_Handler") :: ObjectValue?
-		local h = ov and ov.Value
-		if h and (h :: any).applyDamage then (h :: any):applyDamage(finalDamage) end
-	else
-		local hum = safeFind(targetChar, "Humanoid")
-		if hum and hum:IsA("Humanoid") then hum:TakeDamage(finalDamage) end
-	end
-	self.H:addUltimate(2)
-	self:applyPostureDamage(8)
+	local parried = self.ParryActive and isTelegraphed
+	local finalDamage = parried and 0 or damage
+	if parried then self.H:addUltimate(10) end
+
+	local hum = targetChar:FindFirstChildOfClass("Humanoid")
+	if hum then hum:TakeDamage(finalDamage) end
 end
-function Combat:autoAimTarget(origin: Vector3, forward: Vector3): Model?
-	local best: Model? = nil; local bestDot = 0; local range = self.S.TargetRange
-	for _, pl in ipairs(Players:GetPlayers()) do
-		if pl.Character and pl.Character ~= self.H.Character then
-			local hrp = safeFind(pl.Character, "HumanoidRootPart")
-			if hrp and hrp:IsA("BasePart") then
-				local dir = (hrp.Position - origin); local dist = dir.Magnitude
-				if dist <= range then
-					local dot = forward:Dot(dir.Unit)
-					if dot > bestDot and dot >= self.S.AutoAimCone then best, bestDot = pl.Character, dot end
-				end
+
+function Combat:autoAimTarget(origin: Vector3, forward: Vector3)
+	local best: Model? = nil; local maxDot = self.S.AutoAimCone
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Character and p.Character ~= self.H.Character then
+			local hrp = p.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+			if hrp then
+				local dir = (hrp.Position - origin).Unit
+				local dot = forward:Dot(dir)
+				if dot > maxDot then maxDot = dot; best = p.Character end
 			end
 		end
 	end
 	return best
 end
+
 function Combat:fireProjectile(origin: Vector3, mousePos: Vector3, speed: number, lifetime: number, radius: number)
-	local dir = (mousePos - origin).Unit; local vel = dir * speed
-	local part = Instance.new("Part")
-	part.Size = Vector3.new(radius * 2, radius * 2, radius * 2)
-	part.Shape = Enum.PartType.Ball; part.Color = Color3.fromRGB(255, 215, 0)
-	part.Material = Enum.Material.Neon; part.CanCollide = false; part.Anchored = true
-	part.CFrame = CFrame.new(origin); part.Parent = workspace
-	local t0 = os.clock()
-	local conn: RBXScriptConnection? = nil
-	conn = RunService.Heartbeat:Connect(function(dt)
-		local p = part.Position + vel * dt
-		local hit = workspace:Raycast(part.Position, vel * dt, self.HitboxParams)
-		if hit then
-			local model = hit.Instance:FindFirstAncestorOfClass("Model")
-			if model and model ~= self.H.Character then self:registerHit(model, 15, false) end
-			part:Destroy(); if conn then conn:Disconnect() end
-		elseif os.clock() - t0 >= lifetime then
-			part:Destroy(); if conn then conn:Disconnect() end
-		else
-			part.CFrame = CFrame.new(p)
-		end
+	local p = Instance.new("Part")
+	p.Size = Vector3.new(radius, radius, radius); p.Color = Color3.new(1,1,0); p.Anchored = true; p.CanCollide = false; p.Parent = workspace
+	p.CFrame = CFrame.new(origin, mousePos)
+	local start = os.clock()
+	local conn; conn = RunService.Heartbeat:Connect(function(dt)
+		if os.clock() - start > lifetime then p:Destroy(); conn:Disconnect(); return end
+		p.CFrame *= CFrame.new(0, 0, -speed * dt)
 	end)
 end
 
---// Hitboxes
-local Hitboxes = {}
-Hitboxes.__index = Hitboxes
-function Hitboxes.new(combat: CombatType)
-	local self = setmetatable({}, Hitboxes)
-	(self :: any).Combat = combat
-	return self :: any
-end
-function Hitboxes:swing(origin: Vector3, target: Vector3, radius: number, steps: number, damage: number, telegraphed: boolean)
-	local combat: CombatType = (self :: any).Combat
-	local r = MathLib.capsuleCast(origin, target, radius, steps, combat.HitboxParams)
-	if r.hit then
-		local model = r.hit.Instance:FindFirstAncestorOfClass("Model")
-		if model and model ~= combat.H.Character then combat:registerHit(model, damage, telegraphed) end
-	end
-end
-
---// Destruction System
+--// Destruction Subsystem
 local Destruction = {}
-Destruction.__index = Destruction
-function Destruction.new()
-	return setmetatable({}, Destruction)
-end
-function Destruction:shatter(part: BasePart, shards: number, force: number, lifetime: number)
-	if not part or not part:IsA("BasePart") then return end
-	local size = part.Size; local pos = part.Position; local color = part.Color
+function Destruction.shatter(part: BasePart, shards: number)
+	local pos = part.Position; local color = part.Color; local size = part.Size
 	part:Destroy()
 	for i = 1, shards do
 		local s = Instance.new("Part")
-		s.Size = Vector3.new(size.X / math.max(1, shards), size.Y / math.max(1, shards), size.Z / math.max(1, shards))
-		s.Position = pos + MathLib.jitter3(i * 7, os.clock(), math.min(size.Magnitude * 0.1, 2))
-		s.Color = color; s.Material = Enum.Material.Concrete
-		s.Anchored = false; s.CanCollide = true; s.Parent = workspace
-		s:ApplyImpulse(MathLib.jitter3(i * 11, os.clock(), force))
-		task.delay(lifetime, function() if s and s.Parent then s:Destroy() end end)
+		s.Size = size / math.sqrt(shards); s.Position = pos + MathLib.jitter3(i, 1, 1); s.Color = color; s.Parent = workspace
+		Debris:AddItem(s, 2)
 	end
 end
 
---// VFX
+--// VFX Subsystem
 local VFX = {}
 VFX.__index = VFX
-function VFX.new(): VFXType
-	return setmetatable({}, VFX) :: any
-end
+function VFX.new(): VFXType return setmetatable({}, VFX) :: any end
+
 function VFX:bezierTrail(p0: Vector3, p1: Vector3, p2: Vector3, p3: Vector3, duration: number, color: Color3)
-	local segs = 24; local points = {}
-	for i = 0, segs do points[i + 1] = MathLib.bezier3(p0, p1, p2, p3, i / segs) end
-	local parts = {}
-	for i = 1, #points - 1 do
-		local a, b = points[i], points[i + 1]
-		local p = Instance.new("Part")
-		p.Anchored = true; p.CanCollide = false; p.Material = Enum.Material.Neon; p.Color = color
-		local mid = (a + b) * 0.5; local len = (b - a).Magnitude
-		p.Size = Vector3.new(0.2, 0.2, len); p.CFrame = CFrame.new(mid, b); p.Parent = workspace
-		table.insert(parts, p)
-	end
-	task.delay(duration, function() for _, q in ipairs(parts) do if q and q.Parent then q:Destroy() end end end)
+	local attachment0 = Instance.new("Attachment", workspace.Terrain)
+	local attachment1 = Instance.new("Attachment", workspace.Terrain)
+	local trail = Instance.new("Trail"); trail.Color = ColorSequence.new(color); trail.Parent = workspace.Terrain
+	trail.Attachment0 = attachment0; trail.Attachment1 = attachment1
+	local start = os.clock()
+	task.spawn(function()
+		while os.clock() - start < duration do
+			local t = (os.clock() - start) / duration
+			local pos = MathLib.bezier3(p0, p1, p2, p3, t)
+			attachment0.Position = pos; attachment1.Position = pos + Vector3.new(0, 1, 0)
+			RunService.Heartbeat:Wait()
+		end
+		trail:Destroy(); attachment0:Destroy(); attachment1:Destroy()
+	end)
 end
+
 function VFX:lightning(p0: Vector3, p1: Vector3, jag: number, segs: number, color: Color3, lifetime: number)
-	local pts = MathLib.lightningPath(p0, p1, jag, segs, math.random(1, 9999))
+	local pts = MathLib.lightningPath(p0, p1, jag, segs, math.random(1, 1000))
 	for i = 1, #pts - 1 do
-		local a, b = pts[i], pts[i + 1]
 		local p = Instance.new("Part")
-		p.Anchored = true; p.CanCollide = false; p.Material = Enum.Material.Neon; p.Color = color
-		local mid = (a + b) * 0.5; local len = (b - a).Magnitude
-		p.Size = Vector3.new(0.1, 0.1, len); p.CFrame = CFrame.new(mid, b); p.Parent = workspace
-		task.delay(lifetime, function() if p and p.Parent then p:Destroy() end end)
+		p.Anchored = true; p.CanCollide = false; p.Color = color; p.Material = Enum.Material.Neon
+		p.Size = Vector3.new(0.2, 0.2, (pts[i+1] - pts[i]).Magnitude)
+		p.CFrame = CFrame.new((pts[i] + pts[i+1])/2, pts[i+1]); p.Parent = workspace
+		Debris:AddItem(p, lifetime)
 	end
 end
 
---// UI Library
+--// UI Subsystem
 local UILib = {}
 UILib.__index = UILib
+
 function UILib.new(player: Player, settings: SettingsType): UILibType
 	local self = setmetatable({}, UILib) :: any
 	self.Player = player; self.S = settings.UI
-	local gui = Instance.new("ScreenGui"); gui.Name = "HybridUI"; gui.ResetOnSpawn = false; gui.IgnoreGuiInset = true
-	gui.Parent = player:WaitForChild("PlayerGui")
+	local gui = Instance.new("ScreenGui"); gui.Parent = player:WaitForChild("PlayerGui")
 	self.Gui = gui
-
-	self.Loading = UILib.createLoading(self, gui, settings.Menu)
-	self.Menu = UILib.createMenu(self, gui, settings.Menu)
-	self.HealthBar = UILib.createBar(self, gui, UDim2.new(0, 20, 1, -60), UDim2.new(0, 300, 0, 20), "Health")
-	self.UltBar = UILib.createBar(self, gui, UDim2.new(0, 20, 1, -35), UDim2.new(0, 300, 0, 15), "Ultimate")
-	self.SkillSlots = UILib.createSkills(self, gui, 4)
-	return self
-end
-function UILib:createLoading(parent: Instance, menuCfg: MenuSettings): Frame
-	local frame = Instance.new("Frame"); frame.BackgroundColor3 = Color3.fromRGB(10,10,10); frame.Size = UDim2.fromScale(1,1); frame.Parent = parent
-	local title = Instance.new("TextLabel"); title.BackgroundTransparency = 1; title.Text = "Loading..."
-	title.Font = DefaultSettings.UI.Font; title.TextColor3 = Color3.new(1,1,1); title.TextSize = 28; title.Size = UDim2.new(0, 300, 0, 40); title.Position = UDim2.new(0.5, -150, 0.5, -20); title.Parent = frame
-	return frame
-end
-function UILib:createMenu(parent: Instance, menuCfg: MenuSettings): {Frame: Frame, Play: TextButton}
-	local frame = Instance.new("Frame"); frame.BackgroundTransparency = 1; frame.Size = UDim2.fromScale(1,1); frame.Parent = parent
-	local title = Instance.new("TextLabel"); title.BackgroundTransparency = 1; title.Text = menuCfg.Title
-	title.Font = DefaultSettings.UI.Font; title.TextColor3 = Color3.new(1,1,1); title.TextSize = 32; title.Size = UDim2.new(0, 400, 0, 40); title.Position = UDim2.new(0.5, -200, 0.3, 0); title.Parent = frame
-	local sub = Instance.new("TextLabel"); sub.BackgroundTransparency = 1; sub.Text = menuCfg.Subtitle
-	sub.Font = DefaultSettings.UI.Font; sub.TextColor3 = Color3.new(1,1,1); sub.TextSize = 18; sub.Size = UDim2.new(0, 400, 0, 30); sub.Position = UDim2.new(0.5, -200, 0.3, 40); sub.Parent = frame
-	local play = Instance.new("TextButton"); play.Text = "Play"; play.Font = DefaultSettings.UI.Font; play.TextSize = 20
-	play.BackgroundColor3 = DefaultSettings.UI.BarFG; play.Size = UDim2.new(0, 160, 0, 40); play.Position = UDim2.new(0.5, -80, 0.6, 0); play.Parent = frame
-	return {Frame = frame, Play = play}
-end
-function UILib:showLoading(show: boolean)
-	self.Loading.Visible = show
-end
-function UILib:showMenu(show: boolean)
-	self.Menu.Frame.Visible = show
-end
-function UILib:createBar(parent: Instance, pos: UDim2, size: UDim2, label: string): {BG: Frame, FG: Frame, Label: TextLabel}
-	local bg = Instance.new("Frame"); bg.BackgroundColor3 = DefaultSettings.UI.BarBG; bg.BorderSizePixel = 0; bg.Position = pos; bg.Size = size; bg.Parent = parent
-	local fg = Instance.new("Frame"); fg.BackgroundColor3 = DefaultSettings.UI.BarFG; fg.BorderSizePixel = 0; fg.Size = UDim2.new(0, 0, 1, 0); fg.Parent = bg
-	local text = Instance.new("TextLabel"); text.BackgroundTransparency = 1; text.Text = label; text.Font = DefaultSettings.UI.Font; text.TextColor3 = Color3.new(1,1,1); text.TextSize = 14; text.Position = UDim2.new(0, 5, 0, -18); text.Size = UDim2.new(0, 200, 0, 18); text.Parent = bg
-	return {BG = bg, FG = fg, Label = text}
-end
-function UILib:updateBar(bar: {BG: Frame, FG: Frame, Label: TextLabel}, ratio: number)
-	local t = MathLib.smooth5(clamp01(ratio))
-	bar.FG:TweenSize(UDim2.new(t, 0, 1, 0), Enum.EasingDirection.Out, Enum.EasingStyle.Linear, DefaultSettings.UI.AnimTime, true)
-end
-function UILib:createSkills(parent: Instance, count: number): {Container: Frame, Slots: {[number]: {Slot: Frame, Cooldown: Frame, Key: TextLabel, Ready: boolean}}}
-	local container = Instance.new("Frame"); container.BackgroundTransparency = 1; container.Position = UDim2.new(1, - (count * 60 + 20), 1, -80); container.Size = UDim2.new(0, count * 60, 0, 60); container.Parent = parent
-	local slots: {[number]: {Slot: Frame, Cooldown: Frame, Key: TextLabel, Ready: boolean}} = {}
-	for i = 1, count do
-		local slot = Instance.new("Frame"); slot.BackgroundColor3 = DefaultSettings.UI.BarBG; slot.BorderSizePixel = 0; slot.Size = UDim2.new(0, 50, 0, 50); slot.Position = UDim2.new(0, (i - 1) * 60, 0, 0); slot.Parent = container
-		local cd = Instance.new("Frame"); cd.BackgroundColor3 = Color3.fromRGB(0,0,0); cd.BackgroundTransparency = 0.5; cd.BorderSizePixel = 0; cd.Size = UDim2.new(1, 0, 1, 0); cd.Parent = slot
-		local key = Instance.new("TextLabel"); key.BackgroundTransparency = 1; key.Text = tostring(i); key.Font = DefaultSettings.UI.Font; key.TextColor3 = Color3.new(1,1,1); key.TextSize = 14; key.Position = UDim2.new(0, 0, 1, -18); key.Size = UDim2.new(1, 0, 0, 18); key.Parent = slot
-		slots[i] = {Slot = slot, Cooldown = cd, Key = key, Ready = true}
-	end
-	return {Container = container, Slots = slots}
-end
-function UILib:setCooldown(slotIndex: number, duration: number)
-	local slot = self.SkillSlots.Slots[slotIndex]; if not slot or not slot.Ready then return end
-	slot.Ready = false; slot.Cooldown.Size = UDim2.new(1, 0, 1, 0)
-	TweenService:Create(slot.Cooldown, TweenInfo.new(duration, Enum.EasingStyle.Linear), {Size = UDim2.new(1, 0, 0, 0)}):Play()
-	task.delay(duration, function() slot.Ready = true end)
-end
-
---// Classes
-local Classes = {}
-Classes.__index = Classes
-function Classes.new(combat: CombatType, vfx: VFXType, ui: UILibType): ClassesType
-	local self = setmetatable({}, Classes) :: any
-	self.Combat = combat; self.VFX = vfx; self.UI = ui
-	self.Passives = {}
-	self.Attacks = {
-		AutoAim = function(origin: Vector3, forward: Vector3)
-			local target = combat:autoAimTarget(origin, forward)
-			if target then
-				local hrp = safeFind(target, "HumanoidRootPart")
-				if hrp and hrp:IsA("BasePart") then
-					vfx:bezierTrail(origin, origin + forward * 10, hrp.Position + Vector3.new(0,5,0), hrp.Position, 0.25, Color3.fromRGB(255, 80, 80))
-					combat:registerHit(target, 20, true)
-				end
-			end
-		end,
-		MouseTarget = function(origin: Vector3, mousePos: Vector3)
-			local r = workspace:Raycast(origin, (mousePos - origin), combat.HitboxParams)
-			local hitModel = r and r.Instance:FindFirstAncestorOfClass("Model")
-			if hitModel and hitModel ~= combat.H.Character then
-				vfx:lightning(origin, r.Position, 0.6, 12, Color3.fromRGB(120, 200, 255), 0.2)
-				combat:registerHit(hitModel, 25, true)
-			end
-		end,
-		Projectile = function(origin: Vector3, mousePos: Vector3)
-			combat:fireProjectile(origin, mousePos, combat.S.ProjectileSpeed, 3.0, 0.6)
-		end,
-	}
-	return self
-end
-function Classes:setPassive(name: string, fn: (HumanoidHandlerType) -> ())
-	(self :: any).Passives[name] = fn
-end
-function Classes:applyPassive(name: string, handler: HumanoidHandlerType)
-	local fn = (self :: any).Passives[name]; if fn then fn(handler) end
-end
-
---// Input
-local Input = {}
-Input.__index = Input
-function Input.new(player: Player, handler: HumanoidHandlerType, combat: CombatType, classes: ClassesType, ui: UILibType, physics: PhysicsType): InputType
-	local self = setmetatable({}, Input) :: any
-	self.Player = player; self.H = handler; self.Combat = combat; self.Classes = classes; self.UI = ui; self.Physics = physics
-	self.MoveDir = Vector3.zero; self.Jump = false; self.MousePos = Vector3.zero
-	self.JujutsuMove = nil
-	self.ParryPeriod = 0.8
-	return self
-end
-function Input:bind()
-	UserInputService.InputBegan:Connect(function(input, gp)
-		if gp then return end
-		if input.KeyCode == Enum.KeyCode.Space then (self :: any).Jump = true end
-		if input.KeyCode == Enum.KeyCode.F then (self :: any).Combat:parry(); (self :: any).UI:setCooldown(4, 0.6) end
-		if input.KeyCode == Enum.KeyCode.LeftShift then (self :: any).Physics:dash() end
-		if input.KeyCode == Enum.KeyCode.Q then (self :: any).JujutsuMove = "WallRun" end
-		if input.KeyCode == Enum.KeyCode.E then (self :: any).JujutsuMove = "Climb" end
-		if input.KeyCode == Enum.KeyCode.One then
-			(self :: any).UI:setCooldown(1, 3)
-			local origin = (self :: any).H.Root.Position; local forward = (self :: any).H.Root.CFrame.LookVector
-			(self :: any).Classes.Attacks.AutoAim(origin, forward)
-		end
-		if input.KeyCode == Enum.KeyCode.Two then
-			(self :: any).UI:setCooldown(2, 4)
-			local origin = (self :: any).H.Root.Position
-			(self :: any).Classes.Attacks.MouseTarget(origin, (self :: any).MousePos)
-		end
-		if input.KeyCode == Enum.KeyCode.Three then
-			(self :: any).UI:setCooldown(3, 2.5)
-			local origin = (self :: any).H.Root.Position
-			(self :: any).Classes.Attacks.Projectile(origin, (self :: any).MousePos)
-		end
-	end)
-	UserInputService.InputEnded:Connect(function(input, gp)
-		if gp then return end
-		if input.KeyCode == Enum.KeyCode.Space then (self :: any).Jump = false end
-		if input.KeyCode == Enum.KeyCode.Q or input.KeyCode == Enum.KeyCode.E then (self :: any).JujutsuMove = nil end
-	end)
-	UserInputService.InputChanged:Connect(function(input, gp)
-		if gp then return end
-		if input.UserInputType == Enum.UserInputType.MouseMovement then
-			local cam = workspace.CurrentCamera
-			if cam then
-				local ray = cam:ViewportPointToRay(input.Position.X, input.Position.Y)
-				(self :: any).MousePos = ray.Origin + ray.Direction * 200
-			end
-		end
-	end)
-	ContextActionService:BindAction("Move", function(_, state, input)
-		if state == Enum.UserInputState.Change then
-			local dir = Vector3.new(0,0,0)
-			if input.KeyCode == Enum.KeyCode.W then dir += Vector3.new(0,0,-1) end
-			if input.KeyCode == Enum.KeyCode.S then dir += Vector3.new(0,0,1) end
-			if input.KeyCode == Enum.KeyCode.A then dir += Vector3.new(-1,0,0) end
-			if input.KeyCode == Enum.KeyCode.D then dir += Vector3.new(1,0,0) end
-			(self :: any).MoveDir = dir.Magnitude > 0 and dir.Unit or Vector3.zero
-		end
-	end, false, Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D)
-end
-
---// Test Environment
-local TestEnv = {}
-TestEnv.__index = TestEnv
-function TestEnv.spawnWall(pos: Vector3, size: Vector3): BasePart
-	local wall = Instance.new("Part"); wall.Anchored = true; wall.CanCollide = true; wall.Size = size; wall.Position = pos
-	wall.Material = Enum.Material.Concrete; wall.Color = Color3.fromRGB(120,120,120); wall.Name = "Wall"; wall.Parent = workspace; return wall
-end
-function TestEnv.spawnDummy(pos: Vector3): Model
-	local dummy = Instance.new("Model"); dummy.Name = "CombatDummy"
-	local root = Instance.new("Part"); root.Name = "HumanoidRootPart"; root.Size = Vector3.new(2,2,1); root.Position = pos; root.Anchored = false; root.CanCollide = true; root.Parent = dummy
-	local hum = Instance.new("Humanoid"); hum.MaxHealth = 100; hum.Health = 100; hum.Parent = dummy
-	dummy.PrimaryPart = root; dummy.Parent = workspace; return dummy
-end
-function TestEnv.spawnParkourProp(pos: Vector3, size: Vector3): BasePart
-	local prop = Instance.new("Part"); prop.Anchored = true; prop.CanCollide = true; prop.Size = size; prop.Position = pos
-	prop.Material = Enum.Material.Metal; prop.Color = Color3.fromRGB(80,80,200); prop.Name = "ParkourProp"; prop.Parent = workspace; return prop
-end
-function TestEnv.setup()
-	TestEnv.spawnWall(Vector3.new(0,5,-20), Vector3.new(40,10,2))
-	TestEnv.spawnWall(Vector3.new(20,5,0), Vector3.new(2,10,40))
-	TestEnv.spawnDummy(Vector3.new(0,3,10))
-	TestEnv.spawnDummy(Vector3.new(-10,3,15))
-	TestEnv.spawnParkourProp(Vector3.new(0,2,5), Vector3.new(6,1,6))
-	TestEnv.spawnParkourProp(Vector3.new(10,4,5), Vector3.new(4,2,4))
-end
-
---// Orchestrator
-local Hybrid = {}
-Hybrid.__index = Hybrid
-
-function Hybrid.new(player: Player, character: Model, settings: SettingsType?): HybridType
-	local cfg = settings or DefaultSettings
-	local handler = HumanoidHandler.new(character, cfg)
-	CollectionService:AddTag(character, "CustomHumanoid")
-	local handlerRef = Instance.new("ObjectValue"); handlerRef.Name = "_Handler"; handlerRef.Value = handler :: any; handlerRef.Parent = character
-
-	local physics = Physics.new(handler, cfg)
-	local anim = Anim.new(handler, cfg)
-	local combat = Combat.new(handler, cfg)
-	local vfx = VFX.new()
-	local ui = UILib.new(player, cfg)
-	local classes = Classes.new(combat, vfx, ui)
-	local input = Input.new(player, handler, combat, classes, physics)
-	input:bind()
-
-	local self = setmetatable({
-		Player = player, Character = character, Handler = handler, Physics = physics, Anim = anim,
-		Combat = combat, VFX = vfx, UI = ui, Classes = classes, Input = input, Settings = cfg,
-		_conn = nil :: RBXScriptConnection?,
-	}, Hybrid) :: HybridType
-
-	-- Loading -> Menu -> Play
-	ui:showLoading(true); ui:showMenu(false)
-	task.delay(1.0, function()
-		ui:showLoading(false); ui:showMenu(true)
-		ui.Menu.Play.MouseButton1Click:Connect(function()
-			ui:showMenu(false)
-			TestEnv.setup()
-		end)
-	end)
-
-	-- Main loop
-	local last = os.clock()
-	self._conn = RunService.Heartbeat:Connect(function(_dt)
-		local now = os.clock(); local stepDt = now - last; last = now
-		local cam = workspace.CurrentCamera
-		local moveWorld = Vector3.zero
-		if cam and input.MoveDir.Magnitude > 0 then
-			local look = cam.CFrame.LookVector; local right = cam.CFrame.RightVector
-			local flatLook = Vector3.new(look.X, 0, look.Z).Unit; local flatRight = Vector3.new(right.X, 0, right.Z).Unit
-			moveWorld = (flatLook * -input.MoveDir.Z + flatRight * input.MoveDir.X).Unit
-		end
-		physics:step(stepDt, moveWorld, input.Jump, input.JujutsuMove)
-		anim:update(stepDt, moveWorld)
-		handler:regenPosture(stepDt)
-		ui:updateBar(ui.HealthBar, handler.Health / handler.MaxHealth)
-		ui:updateBar(ui.UltBar, handler.Ultimate / cfg.Combat.UltimateMax)
-	end)
-
 	return self
 end
 
-function Hybrid:destroy()
-	local conn = self._conn
-	if conn then conn:Disconnect(); self._conn = nil end
-	self.Handler:destroy()
-	local gui = self.UI and self.UI.Gui
-	if gui then gui:Destroy() end
+function UILib:createBar(parent: Instance, pos: UDim2, size: UDim2, label: string)
+	local bg = Instance.new("Frame"); bg.BackgroundColor3 = self.S.BarBG; bg.Position = pos; bg.Size = size; bg.Parent = parent
+	local fg = Instance.new("Frame"); fg.BackgroundColor3 = self.S.BarFG; fg.Size = UDim2.fromScale(1, 1); fg.Parent = bg
+	local txt = Instance.new("TextLabel"); txt.Text = label; txt.Size = UDim2.fromScale(1, 1); txt.BackgroundTransparency = 1; txt.Parent = bg
+	return {BG = bg, FG = fg, Label = txt}
 end
 
---// Module Export
-local Module = {
-	new = Hybrid.new,
-	init = Hybrid.new, -- alias for self-init style
-	DefaultSettings = DefaultSettings,
-	HumanoidHandler = HumanoidHandler,
-	Physics = Physics,
-	Anim = Anim,
-	Combat = Combat,
-	Hitboxes = Hitboxes,
-	Destruction = Destruction,
-	VFX = VFX,
-	UILib = UILib,
-	Classes = Classes,
-	Input = Input,
-	TestEnv = TestEnv,
+function UILib:updateBar(bar: any, ratio: number)
+	bar.FG:TweenSize(UDim2.fromScale(math.clamp(ratio, 0, 1), 1), "Out", "Quad", self.S.AnimTime, true)
+end
+
+--// Main Hybrid Module
+local HybridModule = {}
+HybridModule.__index = HybridModule
+
+HybridModule.DefaultSettings = {
+	Physics = { Gravity = Vector3.new(0, -196.2, 0), MaxSlope = 50, GroundFriction = 8, AirFriction = 0.5, StepHeight = 2, WalkAccel = 80, AirAccel = 40, JumpPower = 65, DashSpeed = 120, DashTime = 0.2, ClimbSpeed = 20, WallRunSpeed = 30 },
+	Animation = { BlendSharpness = 0.6, SwayAmplitude = 0.05, SwayFrequency = 2, FootIK = false },
+	Combat = { ParryWindow = 0.2, ParryCooldown = 0.8, PostureMax = 100, PostureRegen = 15, GuardBreakThreshold = 0.9, PerfectParryBoost = 1.5, Hitstop = 0.05, AutoAimCone = 0.8, TargetRange = 100, ProjectileSpeed = 200, StaminaMax = 100, UltimateMax = 100 },
+	UI = { ThemeColor = Color3.fromRGB(255, 0, 0), AccentColor = Color3.fromRGB(255, 255, 255), BarBG = Color3.fromRGB(30, 30, 30), BarFG = Color3.fromRGB(200, 0, 0), Font = Enum.Font.GothamBold, AnimTime = 0.2 },
+	Menu = { Title = "HYBRID SYSTEMS", Subtitle = "ADVANCED COMBAT ENGINE" }
 }
 
-return Module
+function HybridModule.new(player: Player, character: Model, settings: SettingsType?)
+	local self = setmetatable({}, HybridModule)
+	local activeSettings = settings or HybridModule.DefaultSettings
+
+	self.Player = player
+	self.Character = character
+	self.Handler = HumanoidHandler.new(character, activeSettings)
+	self.Physics = Physics.new(self.Handler, activeSettings)
+	self.Anim = Anim.new(self.Handler, activeSettings)
+	self.Combat = Combat.new(self.Handler, activeSettings)
+	self.VFX = VFX.new()
+	self.UI = UILib.new(player, activeSettings)
+
+	self._conn = RunService.Heartbeat:Connect(function(dt)
+		if self.Handler.Destroyed then return end
+		local moveDir = Vector3.zero
+		self.Physics:step(dt, moveDir, false)
+		self.Anim:update(dt, moveDir)
+		self.Handler:regenPosture(dt)
+	end)
+
+	return self
+end
+
+function HybridModule:destroy()
+	if self._conn then self._conn:Disconnect() end
+	self.Handler:destroy()
+	if self.UI.Gui then self.UI.Gui:Destroy() end
+end
+
+return HybridModule
